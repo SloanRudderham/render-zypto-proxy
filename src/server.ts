@@ -3,22 +3,30 @@ import Fastify from "fastify";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
+// fail fast if env missing
+["ZYPTO_BASE","ZYPTO_API_KEY","ADMIN_KEY","SUPABASE_URL","SUPABASE_SERVICE_ROLE"].forEach((k)=>{
+  if (!process.env[k]) throw new Error(`Missing env: ${k}`);
+});
+
 const f = Fastify({ logger: true });
 
-// e.g. https://dash.zypto.com/api
-const BASE = process.env.ZYPTO_BASE!;
+// health for Render
+f.get("/healthz", async () => ({ ok: true }));
+
+// env
+const BASE = process.env.ZYPTO_BASE!;              // e.g. https://dash.zypto.com/api
 const KEY  = process.env.ZYPTO_API_KEY!;
 const ADMIN = process.env.ADMIN_KEY!;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
-
 const DENY = new Set(
   (process.env.BLOCKED_US_STATES || "")
     .split(",")
-    .map(s => s.trim().toUpperCase())
+    .map((s) => s.trim().toUpperCase())
     .filter(Boolean)
 );
 
+// clients
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
 // auth gate
@@ -31,7 +39,6 @@ f.addHook("onRequest", async (req, rep) => {
 });
 
 type EP = { method: "GET" | "POST"; path: string };
-
 const endpoints: EP[] = [
   { method: "POST", path: "/virtual-cards/create-card-holder" },
   { method: "POST", path: "/virtual-cards/check-card-holder-status" },
@@ -71,7 +78,7 @@ function safeJson(s: string) {
 
 async function proxy(method: "GET" | "POST", path: string, body?: any) {
   const url = `${BASE}${path.startsWith("/") ? "" : "/"}${path}`;
-  const headers: any = {
+  const headers: Record<string,string> = {
     Accept: "application/json",
     Authorization: `Bearer ${KEY}`
   };
@@ -83,8 +90,8 @@ async function proxy(method: "GET" | "POST", path: string, body?: any) {
   return fetch(url, { method, headers });
 }
 
-function countryOf(b: any) { return String(b?.country || b?.Country || "").toUpperCase(); }
-function stateOf(b: any) { return String(b?.state || b?.State || "").toUpperCase(); }
+const countryOf = (b: any) => String(b?.country || b?.Country || "").toUpperCase();
+const stateOf   = (b: any) => String(b?.state   || b?.State   || "").toUpperCase();
 
 for (const ep of endpoints) {
   const local = `/api/zypto${ep.path}`;
