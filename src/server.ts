@@ -1,5 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
@@ -8,7 +9,11 @@ import { randomUUID } from "crypto";
   if (!process.env[k]) throw new Error(`Missing env: ${k}`);
 });
 
+// init server
 const f = Fastify({ logger: true });
+
+// CORS (browser calls)
+await f.register(cors, { origin: true, methods: ["GET","POST"] });
 
 // health for Render
 f.get("/healthz", async () => ({ ok: true }));
