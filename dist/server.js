@@ -2,17 +2,25 @@ import "dotenv/config";
 import Fastify from "fastify";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
+// fail fast if env missing
+["ZYPTO_BASE", "ZYPTO_API_KEY", "ADMIN_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE"].forEach((k) => {
+    if (!process.env[k])
+        throw new Error(`Missing env: ${k}`);
+});
 const f = Fastify({ logger: true });
-// e.g. https://dash.zypto.com/api
-const BASE = process.env.ZYPTO_BASE;
+// health for Render
+f.get("/healthz", async () => ({ ok: true }));
+// env
+const BASE = process.env.ZYPTO_BASE; // e.g. https://dash.zypto.com/api
 const KEY = process.env.ZYPTO_API_KEY;
 const ADMIN = process.env.ADMIN_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 const DENY = new Set((process.env.BLOCKED_US_STATES || "")
     .split(",")
-    .map(s => s.trim().toUpperCase())
+    .map((s) => s.trim().toUpperCase())
     .filter(Boolean));
+// clients
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 // auth gate
 f.addHook("onRequest", async (req, rep) => {
@@ -75,8 +83,8 @@ async function proxy(method, path, body) {
     }
     return fetch(url, { method, headers });
 }
-function countryOf(b) { return String(b?.country || b?.Country || "").toUpperCase(); }
-function stateOf(b) { return String(b?.state || b?.State || "").toUpperCase(); }
+const countryOf = (b) => String(b?.country || b?.Country || "").toUpperCase();
+const stateOf = (b) => String(b?.state || b?.State || "").toUpperCase();
 for (const ep of endpoints) {
     const local = `/api/zypto${ep.path}`;
     if (ep.method === "POST") {
