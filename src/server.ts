@@ -127,5 +127,23 @@ for (const ep of endpoints) {
   }
 }
 
+// add Zypto /cards/statistic route
+f.post("/api/zypto/cards/statistic", async (req, rep) => {
+  try {
+    const r = await fetch(`${BASE}/api/cards/statistic`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${KEY}`,
+      },
+      body: JSON.stringify(req.body || {}),
+    });
+    const text = await r.text();
+    return rep.code(r.status).type("application/json").send(safeJson(text));
+  } catch (e: any) {
+    return rep.code(500).send({ error: "internal_error", details: String(e?.message || e) });
+  }
+});
+
 const port = Number(process.env.PORT) || 3000;
 f.listen({ port, host: "0.0.0.0" });
