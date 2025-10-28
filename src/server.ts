@@ -4,7 +4,7 @@ import cors from "@fastify/cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
-// fail fast if env missing
+// fail fast if env missing (project id is optional)
 ["ZYPTO_BASE","ZYPTO_API_KEY","ADMIN_KEY","SUPABASE_URL","SUPABASE_SERVICE_ROLE"].forEach((k)=>{
   if (!process.env[k]) throw new Error(`Missing env: ${k}`);
 });
@@ -52,7 +52,7 @@ type EP = { method: "GET" | "POST"; path: string };
 const endpoints: EP[] = [
   { method: "POST", path: "/virtual-cards/create-card-holder" },
   { method: "POST", path: "/virtual-cards/check-card-holder-status" },
-  { method: "POST", path: "/virtual-cards/check-user-email" }, // now public via hook
+  { method: "POST", path: "/virtual-cards/check-user-email" }, // public via hook
   { method: "POST", path: "/virtual-cards/create-card-order-deposit" },
   { method: "POST", path: "/virtual-cards/create-card-order-deposit-physical" },
   { method: "POST", path: "/virtual-cards/issue-card" },
@@ -92,6 +92,12 @@ async function proxy(method: "GET" | "POST", path: string, body?: any) {
     Accept: "application/json",
     Authorization: `Bearer ${KEY}`
   };
+
+  // tenant scoping (optional; set in Render env as needed)
+  if (process.env.ZYPTO_PROJECT_ID) headers["X-Project-Id"] = process.env.ZYPTO_PROJECT_ID!;
+  if (process.env.ZYPTO_PROGRAM_ID) headers["X-Program-Id"] = process.env.ZYPTO_PROGRAM_ID!;
+  if (process.env.ZYPTO_BUSINESS_ID) headers["X-Business-Id"] = process.env.ZYPTO_BUSINESS_ID!;
+
   if (method === "POST") {
     headers["Content-Type"] = "application/json";
     headers["Idempotency-Key"] = randomUUID();
@@ -132,17 +138,10 @@ for (const ep of endpoints) {
   }
 }
 
-// add Zypto /cards/statistic route
+// Zypto /cards/statistic via shared proxy to avoid double /api
 f.post("/api/zypto/cards/statistic", async (req, rep) => {
   try {
-    const r = await fetch(`${BASE}/api/cards/statistic`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${KEY}`,
-      },
-      body: JSON.stringify(req.body || {}),
-    });
+    const r = await proxy("POST", "/cards/statistic", req.body || {});
     const text = await r.text();
     return rep.code(r.status).type("application/json").send(safeJson(text));
   } catch (e: any) {
