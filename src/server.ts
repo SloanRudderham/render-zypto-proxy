@@ -4,47 +4,40 @@ import cors from "@fastify/cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
-// fail fast if env missing (project id is optional)
 ["ZYPTO_BASE","ZYPTO_API_KEY","ADMIN_KEY","SUPABASE_URL","SUPABASE_SERVICE_ROLE"].forEach((k)=>{
   if (!process.env[k]) throw new Error(`Missing env: ${k}`);
 });
 
-// init server
 const f = Fastify({ logger: true });
 
-// CORS (browser calls)
-await f.register(cors, { origin: true, methods: ["GET","POST"] });
+// CORS with preflight
+await f.register(cors, {
+  origin: true,                           // set to your domains later
+  methods: ["GET","POST","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization","x-admin-key"],
+  credentials: true
+});
 
-// health for Render
 f.get("/healthz", async () => ({ ok: true }));
 
-// env
-const BASE = process.env.ZYPTO_BASE!;              // e.g. https://dash.zypto.com/api
+const BASE = process.env.ZYPTO_BASE!;     // e.g. https://dash.zypto.com/api
 const KEY  = process.env.ZYPTO_API_KEY!;
 const ADMIN = process.env.ADMIN_KEY!;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
-const DENY = new Set(
-  (process.env.BLOCKED_US_STATES || "")
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean)
-);
+const DENY = new Set((process.env.BLOCKED_US_STATES || "")
+  .split(",").map(s => s.trim().toUpperCase()).filter(Boolean));
 
-// clients
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
-// auth gate: allow GETs and this one POST without admin key
+// allow GET, OPTIONS, and this POST without admin key
 f.addHook("onRequest", async (req, rep) => {
+  const method = req.method;
   const path = (req.url || "").split("?")[0];
-  const openPost =
-    req.method === "POST" &&
-    path === "/api/zypto/virtual-cards/check-user-email";
-
-  if (req.method !== "GET" && !openPost) {
-    if (req.headers["x-admin-key"] !== ADMIN) {
-      return rep.code(401).send({ error: "unauthorized" });
-    }
+  const isPreflight = method === "OPTIONS";
+  const isPublicPost = method === "POST" && path === "/api/zypto/virtual-cards/check-user-email";
+  if (method !== "GET" && !isPreflight && !isPublicPost) {
+    if (req.headers["x-admin-key"] !== ADMIN) return rep.code(401).send({ error: "unauthorized" });
   }
 });
 
@@ -93,9 +86,9 @@ async function proxy(method: "GET" | "POST", path: string, body?: any) {
     Authorization: `Bearer ${KEY}`
   };
 
-  // tenant scoping (optional; set in Render env as needed)
-  if (process.env.ZYPTO_PROJECT_ID) headers["X-Project-Id"] = process.env.ZYPTO_PROJECT_ID!;
-  if (process.env.ZYPTO_PROGRAM_ID) headers["X-Program-Id"] = process.env.ZYPTO_PROGRAM_ID!;
+  // tenant scope headers (set whichever your tenant requires)
+  if (process.env.ZYPTO_PROJECT_ID)  headers["X-Project-Id"]  = process.env.ZYPTO_PROJECT_ID!;
+  if (process.env.ZYPTO_PROGRAM_ID)  headers["X-Program-Id"]  = process.env.ZYPTO_PROGRAM_ID!;
   if (process.env.ZYPTO_BUSINESS_ID) headers["X-Business-Id"] = process.env.ZYPTO_BUSINESS_ID!;
 
   if (method === "POST") {
@@ -138,7 +131,7 @@ for (const ep of endpoints) {
   }
 }
 
-// Zypto /cards/statistic via shared proxy to avoid double /api
+// via shared proxy (prevents double /api)
 f.post("/api/zypto/cards/statistic", async (req, rep) => {
   try {
     const r = await proxy("POST", "/cards/statistic", req.body || {});
