@@ -34,9 +34,14 @@ const DENY = new Set(
 // clients
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
-// auth gate
+// auth gate: allow GETs and this one POST without admin key
 f.addHook("onRequest", async (req, rep) => {
-  if (req.method !== "GET") {
+  const path = (req.url || "").split("?")[0];
+  const openPost =
+    req.method === "POST" &&
+    path === "/api/zypto/virtual-cards/check-user-email";
+
+  if (req.method !== "GET" && !openPost) {
     if (req.headers["x-admin-key"] !== ADMIN) {
       return rep.code(401).send({ error: "unauthorized" });
     }
@@ -47,7 +52,7 @@ type EP = { method: "GET" | "POST"; path: string };
 const endpoints: EP[] = [
   { method: "POST", path: "/virtual-cards/create-card-holder" },
   { method: "POST", path: "/virtual-cards/check-card-holder-status" },
-  { method: "POST", path: "/virtual-cards/check-user-email" },
+  { method: "POST", path: "/virtual-cards/check-user-email" }, // now public via hook
   { method: "POST", path: "/virtual-cards/create-card-order-deposit" },
   { method: "POST", path: "/virtual-cards/create-card-order-deposit-physical" },
   { method: "POST", path: "/virtual-cards/issue-card" },
