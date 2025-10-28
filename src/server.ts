@@ -10,9 +10,9 @@ import { randomUUID } from "crypto";
 
 const f = Fastify({ logger: true });
 
-// CORS with preflight
+// CORS + preflight
 await f.register(cors, {
-  origin: true,                           // set to your domains later
+  origin: true,
   methods: ["GET","POST","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization","x-admin-key"],
   credentials: true
@@ -20,32 +20,75 @@ await f.register(cors, {
 
 f.get("/healthz", async () => ({ ok: true }));
 
-const BASE = process.env.ZYPTO_BASE!;     // e.g. https://dash.zypto.com/api
+const BASE = process.env.ZYPTO_BASE!;
 const KEY  = process.env.ZYPTO_API_KEY!;
 const ADMIN = process.env.ADMIN_KEY!;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 const DENY = new Set((process.env.BLOCKED_US_STATES || "")
-  .split(",").map(s => s.trim().toUpperCase()).filter(Boolean));
+  .split(",").map(s=>s.trim().toUpperCase()).filter(Boolean));
 
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
-// allow GET, OPTIONS, and this POST without admin key
+// auth: allow GET/OPTIONS; also allow this POST public
 f.addHook("onRequest", async (req, rep) => {
-  const method = req.method;
-  const path = (req.url || "").split("?")[0];
-  const isPreflight = method === "OPTIONS";
-  const isPublicPost = method === "POST" && path === "/api/zypto/virtual-cards/check-user-email";
-  if (method !== "GET" && !isPreflight && !isPublicPost) {
-    if (req.headers["x-admin-key"] !== ADMIN) return rep.code(401).send({ error: "unauthorized" });
+  const m = req.method;
+  const p = (req.url || "").split("?")[0];
+  const pre = m === "OPTIONS";
+  const publicPost = m === "POST" && p === "/api/zypto/virtual-cards/check-user-email";
+  if (m !== "GET" && !pre && !publicPost && req.headers["x-admin-key"] !== ADMIN) {
+    return rep.code(401).send({ error: "unauthorized" });
   }
 });
 
+function safeJson(s: string) { try { return JSON.parse(s); } catch { return { raw: s }; } }
+
+async function proxy(method: "GET" | "POST", path: string, body?: any) {
+  const url = `${BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+  const headers: Record<string,string> = {
+    Accept: "application/json",
+    Authorization: `Bearer ${KEY}`
+  };
+  if (process.env.ZYPTO_PROJECT_ID)  headers["X-Project-Id"]  = process.env.ZYPTO_PROJECT_ID!;
+  if (process.env.ZYPTO_PROGRAM_ID)  headers["X-Program-Id"]  = process.env.ZYPTO_PROGRAM_ID!;
+  if (process.env.ZYPTO_BUSINESS_ID) headers["X-Business-Id"] = process.env.ZYPTO_BUSINESS_ID!;
+
+  if (method === "POST") {
+    headers["Content-Type"] = "application/json";
+    headers["Idempotency-Key"] = randomUUID();
+    return fetch(url, { method, headers, body: JSON.stringify(body || {}) });
+  }
+  return fetch(url, { method, headers });
+}
+
+// ---------- Routes ----------
+
+// Upstream expects GET, so translate client POST -> Zypto GET
+f.post("/api/zypto/virtual-cards/check-user-email", async (req, rep) => {
+  const body = (await req.body) as any;
+  const email = String(body?.email || "").trim();
+  if (!email) return rep.code(400).send({ success:false, message:"email required" });
+
+  const r = await proxy("GET", `/virtual-cards/check-user-email?email=${encodeURIComponent(email)}`);
+  const text = await r.text();
+  return rep.code(r.status).type("application/json").send(safeJson(text));
+});
+
+// Optional: also expose GET passthrough for direct calls
+f.get("/api/zypto/virtual-cards/check-user-email", async (req: any, rep) => {
+  const email = String(req.query?.email || "").trim();
+  if (!email) return rep.code(400).send({ success:false, message:"email required" });
+  const r = await proxy("GET", `/virtual-cards/check-user-email?email=${encodeURIComponent(email)}`);
+  const text = await r.text();
+  return rep.code(r.status).type("application/json").send(safeJson(text));
+});
+
+// Generic endpoints (leave as-is)
 type EP = { method: "GET" | "POST"; path: string };
 const endpoints: EP[] = [
   { method: "POST", path: "/virtual-cards/create-card-holder" },
   { method: "POST", path: "/virtual-cards/check-card-holder-status" },
-  { method: "POST", path: "/virtual-cards/check-user-email" }, // public via hook
+  // { method: "POST", path: "/virtual-cards/check-user-email" }, // handled above
   { method: "POST", path: "/virtual-cards/create-card-order-deposit" },
   { method: "POST", path: "/virtual-cards/create-card-order-deposit-physical" },
   { method: "POST", path: "/virtual-cards/issue-card" },
@@ -75,46 +118,20 @@ const endpoints: EP[] = [
   { method: "POST", path: "/virtual-cards/send-declined-email" }
 ];
 
-function safeJson(s: string) {
-  try { return JSON.parse(s); } catch { return { raw: s }; }
-}
-
-async function proxy(method: "GET" | "POST", path: string, body?: any) {
-  const url = `${BASE}${path.startsWith("/") ? "" : "/"}${path}`;
-  const headers: Record<string,string> = {
-    Accept: "application/json",
-    Authorization: `Bearer ${KEY}`
-  };
-
-  // tenant scope headers (set whichever your tenant requires)
-  if (process.env.ZYPTO_PROJECT_ID)  headers["X-Project-Id"]  = process.env.ZYPTO_PROJECT_ID!;
-  if (process.env.ZYPTO_PROGRAM_ID)  headers["X-Program-Id"]  = process.env.ZYPTO_PROGRAM_ID!;
-  if (process.env.ZYPTO_BUSINESS_ID) headers["X-Business-Id"] = process.env.ZYPTO_BUSINESS_ID!;
-
-  if (method === "POST") {
-    headers["Content-Type"] = "application/json";
-    headers["Idempotency-Key"] = randomUUID();
-    return fetch(url, { method, headers, body: JSON.stringify(body || {}) });
-  }
-  return fetch(url, { method, headers });
-}
-
-const countryOf = (b: any) => String(b?.country || b?.Country || "").toUpperCase();
-const stateOf   = (b: any) => String(b?.state   || b?.State   || "").toUpperCase();
-
 for (const ep of endpoints) {
   const local = `/api/zypto${ep.path}`;
-
   if (ep.method === "POST") {
     f.post(local, async (req, rep) => {
       const body = (await req.body) as any;
 
       if (ep.path === "/virtual-cards/create-card-holder") {
-        if (countryOf(body) === "US" && stateOf(body) && DENY.has(stateOf(body))) {
-          return rep.code(400).send({ success: false, message: `Card unavailable in ${stateOf(body)}` });
+        const country = String(body?.country || body?.Country || "").toUpperCase();
+        const state   = String(body?.state   || body?.State   || "").toUpperCase();
+        if (country === "US" && state && DENY.has(state)) {
+          return rep.code(400).send({ success:false, message:`Card unavailable in ${state}` });
         }
         if (body?.sharedToken && !body?.ipAddress) {
-          return rep.code(400).send({ success: false, message: "ipAddress required when sharedToken is used" });
+          return rep.code(400).send({ success:false, message:"ipAddress required when sharedToken is used" });
         }
       }
 
@@ -123,7 +140,7 @@ for (const ep of endpoints) {
       return rep.code(r.status).type("application/json").send(safeJson(text));
     });
   } else {
-    f.get(local, async (_req, rep) => {
+    f.get(local, async (req: any, rep) => {
       const r = await proxy("GET", ep.path);
       const text = await r.text();
       return rep.code(r.status).type("application/json").send(safeJson(text));
@@ -131,15 +148,11 @@ for (const ep of endpoints) {
   }
 }
 
-// via shared proxy (prevents double /api)
+// stats
 f.post("/api/zypto/cards/statistic", async (req, rep) => {
-  try {
-    const r = await proxy("POST", "/cards/statistic", req.body || {});
-    const text = await r.text();
-    return rep.code(r.status).type("application/json").send(safeJson(text));
-  } catch (e: any) {
-    return rep.code(500).send({ error: "internal_error", details: String(e?.message || e) });
-  }
+  const r = await proxy("POST", "/cards/statistic", (await req.body) || {});
+  const text = await r.text();
+  return rep.code(r.status).type("application/json").send(safeJson(text));
 });
 
 const port = Number(process.env.PORT) || 3000;
